@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+results/
+figures/
+slurm-*.out
+slurm-*.err
+.env
+*.ncu-rep
+*.nsys-rep
+.DS_Store
+_smoke/
+_smoke_figures/
