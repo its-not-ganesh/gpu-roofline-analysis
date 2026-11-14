@@ -120,7 +120,7 @@ Linux (run only in a GPU allocation with `ncu` available):
 bash scripts/profile_ncu_linux.sh MACHINE_LABEL results_final
 ```
 
-The Windows script uses kernel replay, leaves cache flushing disabled, and uses 100 warmup steps at batch 32 and seed 1337. Capture into a fresh destination. It records Nsight version, GPU UUID, kernel count and separate totals for read and write bytes. A blocked or incomplete capture leaves the final counter table unavailable. Each successful script produces `results_final/MACHINE_LABEL/nsight/{mlp,cnn,vit}_step.ncu-rep`, raw CSV, and `measured_dram.csv`. Verify that each raw capture contains the kernels for **exactly one complete training step**, not warm-up kernels or partial steps, before using the numbers as per-step traffic. Nsight counter availability depends on GPU, tool version, permissions, and workload. On managed clusters, unavailable counters should be recorded as missing rather than estimated.
+The Windows script uses kernel replay, leaves cache flushing disabled, and uses 100 warmup steps at batch 32 and seed 1337. Capture into a fresh destination. It records Nsight version, GPU UUID, kernel count and separate totals for read and write bytes. A blocked or incomplete capture leaves the final counter table unavailable. Each successful script produces a profiler report (`.ncu-rep` or `.ncu-repz`) and a raw CSV per model, and `measured_dram.csv`. Verify that each raw capture contains the kernels for **exactly one complete training step**, not warm-up kernels or partial steps, before using the numbers as per-step traffic. Nsight counter availability depends on GPU, tool version, permissions, and workload. On managed clusters, unavailable counters should be recorded as missing rather than estimated.
 
 To build rooflines using validated measurements, use the machine-specific counter table alongside its raw exports and run:
 
@@ -129,7 +129,7 @@ python -m gpumodel report --input results_final --output figures_measured \
   --baseline MACHINE_LABEL --dram-csv results_final/MACHINE_LABEL/nsight/measured_dram.csv
 ```
 
-When the DRAM CSV is not supplied, the framework uses a logical-tensor traffic proxy and labels it accordingly. Plot performance uses estimated operator FLOPs divided by measured end-to-end training step time; it is not a hardware-executed FLOP metric.
+Measured DRAM totals sum per-kernel hardware counters. Standalone CUDA memory operations such as device memset are outside those totals. When the DRAM CSV is not supplied, the framework uses a logical-tensor traffic proxy and labels it accordingly. Plot performance uses estimated operator FLOPs divided by measured end-to-end training step time; it is not a hardware-executed FLOP metric.
 
 ### Reproducibility data archive
 

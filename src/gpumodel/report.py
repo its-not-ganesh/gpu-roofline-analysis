@@ -214,11 +214,14 @@ def generate(input_dir="results", output_dir="figures", baseline="desktop-4070",
             ax.scatter(r["arithmetic_intensity_flop_per_byte"], r["achieved_model_gflops_per_s"], s=85,
                        label=f"{r['model']} / {r['data_mode']} ({r['arithmetic_intensity_source']})", color=color)
         ax.axvline(ridge, linestyle="--", color="gray", alpha=0.7, label=f"Ridge â‰ˆ {ridge:.1f} FLOP/B")
-        denominator = "measured GPU DRAM bytes" if dram_csv else "estimated logical tensor bytes"
+        denominator = "GPU DRAM bytes measured across kernels" if dram_csv else "estimated logical tensor bytes"
         kind = "measured_dram" if dram_csv else "logical_tensor"
         ax.set_xlabel(f"Estimated operator FLOPs / {denominator}")
         ax.set_ylabel("Estimated model FLOPs / measured training time (GFLOP/s)")
         ax.set_title(f"Empirical roofline â€” {env} (FP32, device-copy calibration)")
+        if dram_csv:
+            ax.text(0.02, 0.07, "Nsight kernel counters exclude standalone CUDA memory operations.",
+                    transform=ax.transAxes, fontsize=8)
         ax.legend(fontsize=8)
         ax.grid(True, which="both", alpha=0.25)
         fig.tight_layout()
