@@ -24,3 +24,4 @@ figures_verified/
 *_experiment_data.zip
 .test-deps/
 figures_measured/
+*.ncu-repz

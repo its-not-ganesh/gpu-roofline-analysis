@@ -23,13 +23,17 @@ for model in mlp cnn vit; do
     --metrics dram__bytes_read.sum,dram__bytes_write.sum -o "$base" \
     "$PYTHON_BIN" -m gpumodel capture-step --model "$model" --batch-size 32 --warmup 100 --seed 1337 \
     2>&1 | tee "${base}_capture.txt"
+  report="${base}.ncu-rep"
+  if [[ -f "${base}.ncu-repz" ]]; then
+    report="${base}.ncu-repz"
+  fi
   if grep -Eq 'ERR_NVGPUCTRPERM|==ERROR==|No kernels were profiled' "${base}_capture.txt" ||
      ! grep -Fq "Captured one $model training step" "${base}_capture.txt" ||
-     [[ ! -f "${base}.ncu-rep" ]]; then
+     [[ ! -f "$report" ]]; then
     echo "No complete Nsight capture for $model" >&2
     exit 1
   fi
-  "$NCU" --import "${base}.ncu-rep" --page raw --csv --print-units base --log-file "${base}_raw.csv"
+  "$NCU" --import "$report" --page raw --csv --print-units base --log-file "${base}_raw.csv"
   "$PYTHON_BIN" -m gpumodel extract-dram --input "${base}_raw.csv" --env "$ENV_LABEL" \
     --output "$DEST/measured_dram.pending.csv" --gpu-id "$gpu" --profiler-version "$version"
 done

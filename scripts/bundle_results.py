@@ -24,9 +24,9 @@ def main():
             if path.is_symlink() or not path.is_file():
                 continue
             suffix = path.suffix.lower()
-            if suffix == ".ncu-rep" and args.omit_nsight_reports:
+            if suffix in {".ncu-rep", ".ncu-repz"} and args.omit_nsight_reports:
                 continue
-            if suffix in {".json", ".csv", ".txt", ".png", ".ncu-rep"}:
+            if suffix in {".json", ".csv", ".txt", ".png", ".ncu-rep", ".ncu-repz"}:
                 if ".pending." not in path.name:
                     files[f"{prefix}/{path.relative_to(source).as_posix()}"] = path
     if not files:

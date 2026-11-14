@@ -35,12 +35,13 @@ foreach ($model in @("mlp", "cnn", "vit")) {
     $capture | Set-Content -Encoding UTF8 "${base}_capture.txt"
     $capture | Write-Host
     if ($code -ne 0) { exit $code }
+    $reports = @(Get-Item -Path @("${base}.ncu-rep", "${base}.ncu-repz") -ErrorAction SilentlyContinue)
     if ($capture -match 'ERR_NVGPUCTRPERM|==ERROR==|No kernels were profiled' -or
         -not ($capture -match "Captured one $model training step") -or
-        -not (Test-Path -LiteralPath "${base}.ncu-rep")) {
+        $reports.Count -ne 1) {
         throw "No complete Nsight capture for $model. See ${base}_capture.txt."
     }
-    & $Ncu --import "${base}.ncu-rep" --page raw --csv --print-units base --log-file "${base}_raw.csv"
+    & $Ncu --import $reports[0].FullName --page raw --csv --print-units base --log-file "${base}_raw.csv"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $python -m gpumodel extract-dram --input "${base}_raw.csv" --env $Environment --model $model --output $pending --gpu-id "$gpu" --profiler-version "$version"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
