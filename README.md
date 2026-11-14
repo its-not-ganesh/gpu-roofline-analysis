@@ -7,11 +7,11 @@ A reproducible, single-GPU PyTorch benchmark for characterizing training perform
 | Variable | Baseline setting |
 |---|---|
 | Training models | `mlp`, `cnn`, `vit` (see `src/gpumodel/models.py`) |
-| Input | Synthetic image tensors, `3 × 64 × 64`; 10 synthetic classes |
+| Input | Synthetic image tensors, `3 Ã— 64 Ã— 64`; 10 synthetic classes |
 | Batch size | 32 |
 | Numeric precision | FP32; TF32 disabled |
 | Optimizer and objective | SGD, cross-entropy |
-| Timing | 15 warm-up steps, 120 measured steps, 3 independent repeats |
+| Timing | 100 warm-up steps, 10,000 measured steps, 3 independent repeats |
 | Hardware | One NVIDIA CUDA GPU per run |
 | Input placement | GPU-resident by default (`--data-mode device`) |
 | Output | Per-trial JSON and CSV telemetry; aggregated CSV and PNG figures |
@@ -31,7 +31,7 @@ CPU execution is supported for smoke tests (`--device cpu`) but does not produce
 ### Windows PowerShell
 
 ```powershell
-py -3.11 -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 # Install CUDA-enabled torch using https://pytorch.org/get-started/locally/
@@ -70,13 +70,13 @@ Partition, account, resource and wall-time settings depend on the HPC scheduler 
 
 ```bash
 python -m gpumodel describe
-python -m gpumodel calibrate --env MACHINE_LABEL
-python -m gpumodel run --env MACHINE_LABEL --models mlp cnn vit \
-  --repeats 3 --warmup 15 --steps 120 --batch-size 32
-python -m gpumodel report --input results --output figures --baseline MACHINE_LABEL
+python -m gpumodel calibrate --env MACHINE_LABEL --output results_final
+python -m gpumodel run --env MACHINE_LABEL --output results_final --models mlp cnn vit \
+  --repeats 3 --warmup 100 --steps 10000 --batch-size 32 --interval 0.2 --data-mode device
+python -m gpumodel report --input results_final --output figures_final --baseline MACHINE_LABEL
 ```
 
-`describe` emits hardware and software metadata. `calibrate` times FP32 matrix multiplication and device-memory copying. `run` executes three training models, saves a record for each repeat, and samples GPU/CPU activity asynchronously. `report` aggregates any environment directories present under `results/`, computes comparisons, and creates per-GPU rooflines where calibration is available.
+`describe` emits hardware and software metadata. `calibrate` times FP32 matrix multiplication and device-memory copying. `run` executes three training models, saves a record for each repeat, and samples GPU/CPU activity asynchronously. `report` aggregates any environment directories present under `results_final/`, computes comparisons, and creates per-GPU rooflines where calibration is available.
 
 The platform scripts execute `describe`, `calibrate`, and the default `run` configuration. All commands can also be called individually. For a small CPU test of the application path:
 
@@ -89,7 +89,7 @@ python -m gpumodel run --env cpu-check --device cpu --models mlp --batch-size 2 
 The run directory is portable:
 
 ```text
-results/
+results_final/
   MACHINE_A/
     hardware.json
     calibration.json
@@ -100,24 +100,44 @@ results/
     ...
 ```
 
-Combine each machine's `results/MACHINE_LABEL` folder under a common `results/` root, preserving its contents. Run the `report` command in that copy of the repository. Generated outputs include `figures/summary.csv`, latency/speedup charts, telemetry traces, and `figures/roofline_<environment>.png` for environments with calibration data. Raw generated data and figures are excluded from Git by default.
+Combine each machine's `results_final/MACHINE_LABEL` folder under a common `results_final/` root, preserving its contents. Run the `report` command in that copy of the repository. Generated outputs include `figures_final/summary.csv`, latency and comparison charts, telemetry traces, and `figures_final/roofline_<environment>_logical_tensor.png` for environments with calibration data. Keep generated artifacts outside version control. Plotting rejects mixed batch, seed, warmup, step count, precision, or source revisions within a data mode. Keep short smoke tests in a separate results root.
 
-### Optional measured DRAM-byte capture
+For a second Windows host, use the same source revision and workload settings, with a fresh Python 3.11 environment and a [CUDA PyTorch build](https://pytorch.org/get-started/locally/) supporting the installed GPU. Record the adapter and vendor power profile before the run. Use `laptop-rtx50` as the environment label and check the actual device reported by `describe`.
 
-The default arithmetic intensity is a **logical-tensor traffic proxy**. Actual GPU DRAM-byte counters, if available, may be collected separately with Nsight Compute and provided to the project plotting pipeline. Counter capture is not part of the synchronized timing benchmark:
+### Optional GPU DRAM profiling (Nsight Compute)
 
-```bash
-ncu --profile-from-start off \
-  --metrics dram__bytes_read.sum,dram__bytes_write.sum \
-  -o step_profile python -m gpumodel capture-step --model cnn --batch-size 32
-ncu --import step_profile.ncu-rep --page raw --csv --print-units base > step_profile.csv
-python -m gpumodel extract-dram --input step_profile.csv \
-  --env MACHINE_LABEL --model cnn --output measured_dram.csv
-python -m gpumodel report --input results --output figures \
-  --baseline MACHINE_LABEL --dram-csv measured_dram.csv
+Nsight Compute is a separate, short, **one-training-step** counter capture and is never used to time the sustained benchmark. It requires installed `ncu` and GPU performance-counter permission. The CLI brackets its single measured step using `cudaProfilerStart` and `cudaProfilerStop`; this is triggered by `--profile-from-start off`.
+
+Windows PowerShell:
+
+```powershell
+.\scripts\profile_ncu_windows.ps1 -Environment MACHINE_LABEL -Output results_final
 ```
 
-Counters and command-line options can differ by Nsight Compute version and GPU; verify the captured metrics and full step scope before interpreting DRAM arithmetic intensity. The `extract-dram` command expects CSV columns named `dram__bytes_read.sum` and `dram__bytes_write.sum`. Hardware counter access may be unavailable on managed systems.
+Linux (run only in a GPU allocation with `ncu` available):
+
+```bash
+bash scripts/profile_ncu_linux.sh MACHINE_LABEL results_final
+```
+
+The Windows script uses kernel replay, leaves cache flushing disabled, and uses 100 warmup steps at batch 32 and seed 1337. Capture into a fresh destination. It records Nsight version, GPU UUID, kernel count and separate totals for read and write bytes. A blocked or incomplete capture leaves the final counter table unavailable. Each successful script produces `results_final/MACHINE_LABEL/nsight/{mlp,cnn,vit}_step.ncu-rep`, raw CSV, and `measured_dram.csv`. Verify that each raw capture contains the kernels for **exactly one complete training step**, not warm-up kernels or partial steps, before using the numbers as per-step traffic. Nsight counter availability depends on GPU, tool version, permissions, and workload. On managed clusters, unavailable counters should be recorded as missing rather than estimated.
+
+To build rooflines using validated measurements, use the machine-specific counter table alongside its raw exports and run:
+
+```bash
+python -m gpumodel report --input results_final --output figures_measured \
+  --baseline MACHINE_LABEL --dram-csv results_final/MACHINE_LABEL/nsight/measured_dram.csv
+```
+
+When the DRAM CSV is not supplied, the framework uses a logical-tensor traffic proxy and labels it accordingly. Plot performance uses estimated operator FLOPs divided by measured end-to-end training step time; it is not a hardware-executed FLOP metric.
+
+### Reproducibility data archive
+
+```bash
+python scripts/bundle_results.py --input results_final --env MACHINE_LABEL --figures figures_final --output experiment_data_bundle.zip
+```
+
+Point `--figures` at plots for the selected machine. The archive includes JSON runs, per-run telemetry, calibration, dependency versions, summary CSV, figures, and optional Nsight raw CSV and report files. It does not include local virtual environments or source-control credentials. Generated measurements are kept outside version control by default.
 
 ## Measurement provenance and limitations
 
@@ -132,7 +152,7 @@ Counters and command-line options can differ by Nsight Compute version and GPU; 
 | FP32 compute and copy ceilings | Project GPU microbenchmarks | Empirical calibration, not vendor peak specifications |
 | GPU DRAM traffic (optional) | Nsight Compute | Hardware counters when correctly collected |
 
-The roofline calculation is `min(compute_ceiling, arithmetic_intensity × bandwidth_ceiling)`. Proxy-based points must not be interpreted as measured hardware DRAM arithmetic intensity. The copy microbenchmark provides a practical bandwidth reference, not an exact hardware limit. CUDA libraries, GPU clocks, thermal state, background workload, and counter availability may affect comparisons. Synthetic GPU-resident input deliberately excludes file I/O, decoding, and dataset-loader effects.
+The roofline calculation is `min(compute_ceiling, arithmetic_intensity Ã— bandwidth_ceiling)`. Proxy-based points must not be interpreted as measured hardware DRAM arithmetic intensity. The copy microbenchmark provides a practical bandwidth reference, not an exact hardware limit. CUDA libraries, GPU clocks, thermal state, background workload, and counter availability may affect comparisons. Synthetic GPU-resident input deliberately excludes file I/O, decoding, and dataset-loader effects.
 
 ## Verification and source layout
 

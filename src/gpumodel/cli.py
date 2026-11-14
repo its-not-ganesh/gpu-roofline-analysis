@@ -2,10 +2,6 @@ import argparse
 import json
 from pathlib import Path
 
-from .benchmark import calibrate, run
-from .telemetry import gpu_metadata
-
-
 def main():
     ap = argparse.ArgumentParser(description="GPU performance characterization experiment")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -32,7 +28,7 @@ def main():
     z = sub.add_parser("capture-step", help="One CUDA-profiler API-delimited step for optional Nsight counters")
     z.add_argument("--model", required=True, choices=["mlp", "cnn", "vit"])
     z.add_argument("--batch-size", type=int, default=32)
-    z.add_argument("--warmup", type=int, default=5)
+    z.add_argument("--warmup", type=int, default=100)
     z.add_argument("--seed", type=int, default=1337)
     e = sub.add_parser("extract-dram", help="Sum Nsight Compute kernel DRAM bytes for exactly one captured step")
     e.add_argument("--input", required=True, help="raw CSV exported from Nsight Compute")
@@ -40,6 +36,11 @@ def main():
     e.add_argument("--env", required=True)
     e.add_argument("--model", required=True, choices=["mlp", "cnn", "vit"])
     e.add_argument("--data-mode", default="device", choices=["device", "host"])
+    e.add_argument("--batch-size", type=int, default=32)
+    e.add_argument("--warmup", type=int, default=100)
+    e.add_argument("--seed", type=int, default=1337)
+    e.add_argument("--gpu-id", default="")
+    e.add_argument("--profiler-version", default="")
     p = sub.add_parser("report", help="Plot comparison, telemetry and rooflines from multiple environment folders")
     p.add_argument("--input", default="results")
     p.add_argument("--output", default="figures")
@@ -47,20 +48,25 @@ def main():
     p.add_argument("--dram-csv", help="Optional measured DRAM bytes per step: environment,model,dram_bytes_per_step")
     args = ap.parse_args()
     if args.command == "describe":
+        from .telemetry import gpu_metadata
         print(json.dumps(gpu_metadata(), indent=2, default=str))
     elif args.command == "run":
+        from .benchmark import run
         if args.steps < 1 or args.repeats < 1 or args.warmup < 0 or args.batch_size < 1 or args.interval <= 0:
             ap.error("Steps, repeats, batch and interval must be positive; warmup may be zero")
         run(args.env, args.output, args.models, args.repeats, args.warmup,
             args.steps, args.batch_size, args.data_mode, args.interval, args.seed, args.device, args.trace)
     elif args.command == "calibrate":
+        from .benchmark import calibrate
         calibrate(args.env, args.output, args.matrix_size, args.copy_mib, args.iterations)
     elif args.command == "capture-step":
         from .ncu import capture_step
         capture_step(args.model, args.batch_size, args.warmup, args.seed)
     elif args.command == "extract-dram":
         from .ncu import extract_csv
-        extract_csv(args.input, args.output, args.env, args.model, args.data_mode)
+        extract_csv(args.input, args.output, args.env, args.model, args.data_mode,
+                    batch=args.batch_size, warmup=args.warmup, seed=args.seed,
+                    gpu_id=args.gpu_id, profiler_version=args.profiler_version)
     elif args.command == "report":
         from .report import generate
         generate(args.input, args.output, args.baseline, args.dram_csv)

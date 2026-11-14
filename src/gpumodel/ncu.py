@@ -1,17 +1,20 @@
 """Optional hardware-counter validation and aggregation, with no fabricated metrics."""
 
 import csv
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-
-import torch
-from torch import nn
-
-from .benchmark import make_workload, step, sync
+from tempfile import NamedTemporaryFile
 
 METRICS = ("dram__bytes_read.sum", "dram__bytes_write.sum")
 
 
-def capture_step(model, batch=32, warmup=5, seed=1337):
+def capture_step(model, batch=32, warmup=100, seed=1337):
+    import torch
+
+    from .benchmark import make_workload, step, sync
+
+    if batch < 1 or warmup < 1:
+        raise ValueError("Capture requires positive batch size and warmup")
     if not torch.cuda.is_available():
         raise RuntimeError("Nsight capture requires CUDA")
     device = torch.device("cuda")
@@ -32,42 +35,87 @@ def capture_step(model, batch=32, warmup=5, seed=1337):
     print(f"Captured one {model} training step at batch={batch}, FP32")
 
 
-def extract_csv(source, output, env, model, data_mode="device"):
-    rows = []
-    with Path(source).open(newline="", encoding="utf-8-sig") as f:
-        for row in csv.reader(f):
-            rows.append(row)
-    header_index = next((i for i, r in enumerate(rows) if all(x in r for x in METRICS)), None)
-    if header_index is None:
-        raise ValueError("CSV does not contain both DRAM read/write metrics. Export with '--page raw --csv --print-units base'.")
-    header = rows[header_index]
-    ridx, widx = header.index(METRICS[0]), header.index(METRICS[1])
-    data = []
-    for row in rows[header_index + 1:]:
-        if len(row) <= max(ridx, widx):
-            continue
-        try:
-            reads = float(row[ridx].replace(",", ""))
-            writes = float(row[widx].replace(",", ""))
-            data.append((reads, writes))
-        except (ValueError, TypeError):
-            continue
-    if not data:
-        raise ValueError("No hardware counter rows parsed. Check permissions, units and Nsight report content.")
-    bytes_total = sum(a + b for a, b in data)
+DRAM_FIELDS = (
+    "environment", "model", "data_mode", "batch_size", "warmup_steps", "seed",
+    "captured_steps", "kernel_count", "gpu_id", "profiler_version", "raw_csv",
+    "dram_read_bytes_per_step", "dram_write_bytes_per_step", "dram_bytes_per_step",
+)
+
+
+def read_raw_counters(source):
+    """Read base-byte counters from every detail row in a single Nsight export."""
+    with Path(source).open(newline="", encoding="utf-8-sig") as stream:
+        rows = csv.reader(stream)
+        required = ("ID", "Kernel Name", *METRICS)
+        header = next((row for row in rows if all(name in row for name in required)), None)
+        if header is None:
+            raise ValueError("Missing Nsight raw per-launch header")
+        id_col, kernel_col, read_col, write_col = map(header.index, required)
+        units = next(rows, [])
+        if len(units) != len(header) or any(
+            units[col].strip().lower() not in {"byte", "bytes"} for col in (read_col, write_col)
+        ):
+            raise ValueError("DRAM counters must use base bytes")
+
+        launches = {}
+        for row in rows:
+            if not any(row):
+                continue
+            if row[0].lstrip().startswith("=="):
+                if "ERROR" in row[0]:
+                    raise ValueError(row[0])
+                continue
+            if row[0].strip().lower() in {"summary", "total", "average"}:
+                continue
+            try:
+                if len(row) != len(header) or not row[kernel_col].strip():
+                    raise ValueError
+                launch_id = int(row[id_col])
+                if launch_id < 0 or launch_id in launches:
+                    raise ValueError
+                counts = [Decimal(row[col].replace(",", "")) for col in (read_col, write_col)]
+                if any(not n.is_finite() or n < 0 or n != n.to_integral_value() for n in counts):
+                    raise ValueError
+            except (InvalidOperation, ValueError) as exc:
+                raise ValueError(f"Invalid or incomplete kernel row at line {rows.line_num}") from exc
+            launches[launch_id] = tuple(map(int, counts))
+
+    if not launches or set(launches) != set(range(len(launches))):
+        raise ValueError("Missing or noncontiguous kernel-launch IDs")
+    read_bytes = sum(pair[0] for pair in launches.values())
+    write_bytes = sum(pair[1] for pair in launches.values())
+    if min(read_bytes, write_bytes) <= 0:
+        raise ValueError("Both DRAM directions must have positive step totals")
+    return len(launches), read_bytes, write_bytes
+
+
+def extract_csv(source, output, env, model, data_mode="device", *, batch=32,
+                warmup=100, seed=1337, gpu_id="", profiler_version=""):
+    """Record counters for a caller-verified, complete single-step capture."""
+    kernels, reads, writes = read_raw_counters(source)
     path = Path(output)
-    prior = []
+    old_rows = []
     if path.exists():
-        with path.open(newline="", encoding="utf-8") as f:
-            prior = list(csv.DictReader(f))
+        with path.open(newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream)
+            if tuple(reader.fieldnames or ()) != DRAM_FIELDS:
+                raise ValueError("Use a fresh output for the per-direction counter schema")
+            old_rows = list(reader)
     key = (env, model, data_mode)
-    prior = [r for r in prior if (r.get("environment"), r.get("model"), r.get("data_mode", "device")) != key]
-    prior.append({"environment": env, "model": model, "data_mode": data_mode,
-                  "dram_bytes_per_step": int(bytes_total)})
+    old_rows = [r for r in old_rows if (r["environment"], r["model"], r["data_mode"]) != key]
+    old_rows.append(dict(zip(DRAM_FIELDS, (
+        env, model, data_mode, batch, warmup, seed, 1, kernels, gpu_id, profiler_version,
+        Path(source).name, reads, writes, reads + writes,
+    ))))
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["environment", "model", "data_mode", "dram_bytes_per_step"])
+    with NamedTemporaryFile(mode="w", newline="", encoding="utf-8", dir=path.parent,
+                            delete=False) as stream:
+        temp = Path(stream.name)
+        writer = csv.DictWriter(stream, fieldnames=DRAM_FIELDS)
         writer.writeheader()
-        writer.writerows(prior)
-    print(f"Parsed {len(data)} kernel launches; total DRAM bytes for ONE captured step: {bytes_total:,.0f}")
-    print(f"Updated {path}")
+        writer.writerows(old_rows)
+    try:
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+    print(f"Parsed {kernels} kernel launches: {reads:,} read bytes, {writes:,} write bytes")

@@ -1,5 +1,6 @@
 import csv
 import platform
+import os
 import threading
 import subprocess
 import time
@@ -29,9 +30,16 @@ def gpu_metadata(index=0):
         "torch": torch.__version__, "torch_cuda_runtime": torch.version.cuda,
         "cuda_available": torch.cuda.is_available(),
     }
+    if os.name == "nt":
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+            meta["cpu_model"] = winreg.QueryValueEx(key, "ProcessorNameString")[0]
+        battery = safe_call(psutil.sensors_battery)
+        meta["ac_power_connected"] = battery.power_plugged if battery else None
     if torch.cuda.is_available():
         meta.update({
             "gpu": torch.cuda.get_device_name(index),
+            "gpu_uuid": str(getattr(torch.cuda.get_device_properties(index), "uuid", "")),
             "gpu_compute_capability": str(torch.cuda.get_device_capability(index)),
             "gpu_total_memory_gb": round(torch.cuda.get_device_properties(index).total_memory / 1e9, 2),
             "cudnn_version": torch.backends.cudnn.version(),
@@ -46,9 +54,16 @@ def gpu_metadata(index=0):
         try:
             pynvml.nvmlInit()
             meta["nvidia_driver"] = pynvml.nvmlSystemGetDriverVersion()
-            pynvml.nvmlShutdown()
+            handle = pynvml.nvmlDeviceGetHandleByUUID(meta["gpu_uuid"] if meta["gpu_uuid"].startswith("GPU-")
+                                                       else "GPU-" + meta["gpu_uuid"]) if meta.get("gpu_uuid") else None
+            if handle is not None:
+                meta["gpu_power_state"] = safe_call(lambda: pynvml.nvmlDeviceGetPerformanceState(handle))
+                limit = safe_call(lambda: pynvml.nvmlDeviceGetPowerManagementLimit(handle))
+                meta["gpu_power_limit_w"] = limit / 1000 if limit is not None else None
         except Exception:
             pass
+        finally:
+            safe_call(pynvml.nvmlShutdown)
     return meta
 
 

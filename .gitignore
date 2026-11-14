@@ -13,3 +13,14 @@ slurm-*.err
 .DS_Store
 _smoke/
 _smoke_figures/
+results_final/
+figures_final/
+experiment_data_bundle.zip
+*.ncu-rep
+
+# Local experiment evidence and handoff
+AGENTS.md
+figures_verified/
+*_experiment_data.zip
+.test-deps/
+figures_measured/

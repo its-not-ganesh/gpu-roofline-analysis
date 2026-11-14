@@ -4,7 +4,7 @@
 
 Three PyTorch classification networks take tensors with shape `(B, 3, 64, 64)` and produce logits for 10 classes. MLP consists of a flattened image and three linear layers; CNN uses convolution, pooling and a linear classifier; TinyViT uses patch embedding, two attention blocks, token pooling and a classifier. SGD is applied after each cross-entropy backward pass.
 
-No model accuracy or convergence is used as a performance endpoint. Batch size, iteration count, warm-up, numerical precision, optimizer and seed are fixed within a comparison grid.
+No model accuracy or convergence is used as a performance endpoint. Batch size, 10,000 measured iterations, 100-step warm-up, numerical precision, optimizer and seed are fixed within a comparison grid.
 
 ## Complexity estimates
 
